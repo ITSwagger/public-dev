@@ -1,49 +1,74 @@
-## Measures the speed of the download, can only be ran on a PC running Windows 10 or a server running Server 2016+, plan is to add uploading also
-## Majority of this script has been copied/butchered from https://www.ramblingtechie.co.uk/2020/07/13/internet-speed-test-in-powershell/
-# MINIMUM ACCEPTED THRESHOLD IN mbps 
-$mindownloadspeed = 20
-$minuploadspeed = 4
+#Requires -Version 5.1
 
-# File to download you can find download links for other files here https://speedtest.flonix.net
-$downloadurl = "https://files.xlawgaming.com/10mb.bin"
-#$UploadURL = "http://ipv4.download.thinkbroadband.com/10MB.zip"
+[CmdletBinding()]
+param (
+    [Parameter(Mandatory = $false)]
+    [int]$MinDownloadSpeedMbps = 20,
 
-# SIZE OF SPECIFIED FILE IN MB (adjust this to match the size of your file in MB as above)
-$size = 10
-# Name of Downloaded file
-$localfile = "SpeedTest.bin"
+    [Parameter(Mandatory = $false)]
+    [string]$DownloadUrl = "http://speedtest-tele2.net/10MB.zip",
 
-# WEB CLIENT VARIABLES
-$webclient = New-Object System.Net.WebClient
+    [Parameter(Mandatory = $false)]
+    [int]$FileSizeMB = 10
+)
 
-#RUN DOWNLOAD & CALCULATE DOWNLOAD SPEED
-$downloadstart_time = Get-Date
-$webclient.DownloadFile($downloadurl, $localfile)
-$downloadtimetaken = $((Get-Date).Subtract($downloadstart_time).Seconds)
-$downloadspeed = ($size / $downloadtimetaken)*8
-Write-Output "Time taken: $downloadtimetaken second(s) | Download Speed: $downloadspeed mbps"
-
-#RUN UPLOAD & CALCULATE UPLOAD SPEED
-#$uploadstart_time = Get-Date
-#$webclient.UploadFile($UploadURL, $localfile) > $null;
-#$uploadtimetaken = $((Get-Date).Subtract($uploadstart_time).Seconds)
-#$uploadspeed = ($size / $uploadtimetaken) * 8
-#Write-Output "Time taken: $uploadtimetaken second(s) | Upload Speed: $uploadspeed mbps"
-
-#DELETE TEST DOWNLOAD FILE
-Remove-Item -path $localfile
-
-#SEND ALERTS IF BELOW MINIMUM THRESHOLD 
-if ($downloadspeed -ge $mindownloadspeed) 
-{ 
-Write-Output "Speed is acceptable. Current download speed at is $downloadspeed mbps which is above the threshold of $mindownloadspeed mbps" 
-exit 0
+function Write-Log {
+    param(
+        [string]$Message,
+        [string]$Level = "INFO"
+    )
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logEntry = "[$timestamp] [$Level] $Message"
+    Write-Host $logEntry
+    if ($Level -in @("ERROR", "FAIL")) {
+        Write-Error $Message -ErrorAction SilentlyContinue
+    }
 }
 
-else 
-{ 
-Write-Output "Current download speed at is $downloadspeed mbps which is below the minimum threshold of $mindownloadspeed mbps" 
-exit 1
-}
+$localFile = Join-Path $env:TEMP "speedtest_$(Get-Random).tmp"
+$webClient = New-Object System.Net.WebClient
+$exitCode = 1 # Default to failure
 
-Exit $LASTEXITCODE
+try {
+    Write-Log "Starting network download speed test."
+    Write-Log "Minimum acceptable speed: $MinDownloadSpeedMbps Mbps."
+    Write-Log "Downloading $FileSizeMB MB file from $DownloadUrl"
+
+    $downloadTime = Measure-Command {
+        $webClient.DownloadFile($DownloadUrl, $localFile)
+    }
+    
+    $secondsTaken = $downloadTime.TotalSeconds
+    if ($secondsTaken -lt 0.1) {
+        Write-Log -Level "WARN" -Message "Download completed too quickly ($([math]::Round($secondsTaken, 4))s) to ensure an accurate measurement."
+        $exitCode = 0
+        return
+    }
+
+    $downloadSpeed = [math]::Round((($FileSizeMB * 8) / $secondsTaken), 2)
+
+    Write-Log "Download completed in $([math]::Round($secondsTaken, 2)) seconds."
+    
+    if ($downloadSpeed -ge $MinDownloadSpeedMbps) {
+        Write-Log -Level "PASS" -Message "Speed is acceptable. Current download speed is $downloadSpeed Mbps."
+        $exitCode = 0
+    }
+    else {
+        Write-Log -Level "FAIL" -Message "Speed is UNACCEPTABLE. Current download speed of $downloadSpeed Mbps is below the minimum threshold of $MinDownloadSpeedMbps Mbps."
+        $exitCode = 1
+    }
+}
+catch {
+    Write-Log -Level "ERROR" -Message "A critical error occurred during the speed test: $($_.Exception.Message)"
+    $exitCode = 1
+}
+finally {
+    if (Test-Path $localFile) {
+        Remove-Item $localFile -Force -ErrorAction SilentlyContinue
+    }
+    if ($webClient) {
+        $webClient.Dispose()
+    }
+    Write-Log "Speed test finished."
+    exit $exitCode
+}
